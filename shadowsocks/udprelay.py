@@ -73,7 +73,7 @@ import traceback
 import threading
 
 from shadowsocks import encrypt, obfs, eventloop, lru_cache, common, shell
-from shadowsocks.common import pre_parse_header, parse_header, pack_addr
+from shadowsocks.common import parse_header, pack_addr
 
 # for each handler, we have 2 stream directions:
 #    upstream:    from client to server direction
@@ -362,11 +362,8 @@ class UDPRelay(object):
             self._protocol.obfs.server_info.recv_iv = ref_iv[0]
             data, uid = self._protocol.server_udp_post_decrypt(data)
 
-        #logging.info("UDP data %s" % (binascii.hexlify(data),))
-        if not self._is_local:
-            data = pre_parse_header(data)
-            if data is None:
-                return
+        if not data:
+            return
 
         try:
             header_result = parse_header(data)

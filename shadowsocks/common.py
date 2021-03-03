@@ -21,7 +21,6 @@ from __future__ import absolute_import, division, print_function, \
 import socket
 import struct
 import logging
-import binascii
 import re
 
 from shadowsocks import lru_cache
@@ -171,46 +170,6 @@ def pack_addr(address):
         address = address[:255]  # TODO
     return b'\x03' + chr(len(address)) + address
 
-def pre_parse_header(data):
-    if not data:
-        return None
-    datatype = ord(data[0])
-    if datatype == 0x80:
-        if len(data) <= 2:
-            return None
-        rand_data_size = ord(data[1])
-        if rand_data_size + 2 >= len(data):
-            logging.warn('header too short, maybe wrong password or '
-                         'encryption method')
-            return None
-        data = data[rand_data_size + 2:]
-    elif datatype == 0x81:
-        data = data[1:]
-    elif datatype == 0x82:
-        if len(data) <= 3:
-            return None
-        rand_data_size = struct.unpack('>H', data[1:3])[0]
-        if rand_data_size + 3 >= len(data):
-            logging.warn('header too short, maybe wrong password or '
-                         'encryption method')
-            return None
-        data = data[rand_data_size + 3:]
-    elif datatype == 0x88 or (~datatype & 0xff) == 0x88:
-        if len(data) <= 7 + 7:
-            return None
-        data_size = struct.unpack('>H', data[1:3])[0]
-        ogn_data = data
-        data = data[:data_size]
-        crc = binascii.crc32(data) & 0xffffffff
-        if crc != 0xffffffff:
-            logging.warn('uncorrect CRC32, maybe wrong password or '
-                         'encryption method')
-            return None
-        start_pos = 3 + ord(data[3])
-        data = data[start_pos:-4]
-        if data_size < len(ogn_data):
-            data += ogn_data[data_size:]
-    return data
 
 def parse_header(data):
     addrtype = ord(data[0])

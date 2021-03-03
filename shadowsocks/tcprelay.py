@@ -30,7 +30,7 @@ import platform
 import threading
 
 from shadowsocks import encrypt, obfs, eventloop, shell, common, lru_cache, version
-from shadowsocks.common import pre_parse_header, parse_header
+from shadowsocks.common import parse_header
 
 # we clear at most TIMEOUTS_CLEAN_SIZE timeouts each time
 TIMEOUTS_CLEAN_SIZE = 512
@@ -615,7 +615,6 @@ class TCPRelayHandler(object):
             if self._is_local:
                 header_result = parse_header(data)
             else:
-                data = pre_parse_header(data)
                 if data is None:
                     data = self._handel_protocol_error(self._client_address, ogn_data)
                 header_result = parse_header(data)
