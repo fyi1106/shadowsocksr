@@ -25,6 +25,8 @@ import os
 import logging
 import signal
 
+from shadowsocks.common import InnoProto
+
 if __name__ == '__main__':
     import inspect
     file_path = os.path.dirname(os.path.realpath(inspect.getfile(inspect.currentframe())))
@@ -60,9 +62,7 @@ def inno_auth(config, tcp_server):
     obfuscate.set_server_info(server_info)
 
     # 组装请求内容
-    request = b''.join((b'\x80\x01',
-                        len(passphrase).to_bytes(1, 'big'),
-                        passphrase))
+    request = InnoProto.pack_auth_data(passphrase)
     request = encryptor.encrypt(request)
     request = obfuscate.client_encode(request)
 
@@ -75,17 +75,11 @@ def inno_auth(config, tcp_server):
     sock.close()
     logging.debug('Inno: auth response %s', resp.hex())
 
-    # 如果返回错误
-    if resp[:3] != b'\x80\x01\x00':
-        logging.debug('Inno: auth failed with response %s', resp)
-        raise RuntimeError('auth fail')
-
-    # 如果数据格式错误
-    if len(resp) <= 4 or len(resp) < 4 + resp[3]:
-        raise RuntimeError('invalid auth response %s', resp)
-
     # 返回 token
-    token = resp[4:4 + resp[3]]
+    token = InnoProto.parse_auth_result(resp)
+    if not token:
+        logging.debug('Inno: auth failed with response %s', resp.hex())
+        raise RuntimeError('auth fail')
     return token
 
 

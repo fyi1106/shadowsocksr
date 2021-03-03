@@ -627,15 +627,13 @@ class TCPRelayHandler(object):
                     data = self._handel_protocol_error(self._client_address, ogn_data)
 
                 # InnoSSR 会在第一字节作标记
-                is_inno = data[0] & InnoProto.MASK
+                is_inno = InnoProto.is_inno_data(data)
 
                 if is_inno:
-                    if data[0] != InnoProto.MASK:
+                    if InnoProto.is_trans_data(data):
                         # 如果第一字节除了标记位外还有其它信息，那么就是传输指令
                         # 去掉标记，后续做普通的处理并验证 token
-                        data = b''.join((
-                            (data[0] & ~InnoProto.MASK).to_bytes(1, 'big'),
-                            data[1:]))
+                        data = InnoProto.remove_inno_mask(data)
                     else:
                         # 其它情况，那么这个数据就是其它指令
                         self._process_inno_command(data)
@@ -686,14 +684,7 @@ class TCPRelayHandler(object):
 
                     # 将 token 加入到内容里
                     logging.debug('Inno: use token %s', token.hex())
-                    data = b''.join((
-                        # 首字节加标识
-                        (data[0] | InnoProto.MASK).to_bytes(1, 'big'),
-                        data[1:head_len],
-                        # token 的长度 + token 内容
-                        len(token).to_bytes(1, 'big'),
-                        token,
-                        data[head_len:]))
+                    data = InnoProto.add_token_to_trans(data, head_len, token)
 
                 self._obfs.obfs.server_info.head_len = head_len
                 self._protocol.obfs.server_info.head_len = head_len
@@ -709,22 +700,10 @@ class TCPRelayHandler(object):
             else:
                 # 如果是 InnoSSR 则需要处理 token
                 if is_inno:
-                    # 在 header 后跟着 1-byte 的 token 长度，和 token
                     # 取 token_len
-                    offset = header_length
-                    if len(data) < offset + 1:
-                        logging.error('Inno: invalid token length in inno transmit data')
-                        self.destroy()
-                        return
-                    token_len = int.from_bytes(data[offset:offset + 1], 'big')
-
-                    # 取 token
-                    offset = offset + 1
-                    if len(data) < offset + token_len:
-                        logging.error('Inno: token length not match in inno transmit data')
-                        self.destroy()
-                        return
-                    token = data[offset:offset + token_len]
+                    token, offset = InnoProto.get_trans_token(data, header_length)
+                    if not token:
+                        logging.error('Inno: failed to get token from transmit data')
 
                     # 验证 token
                     if token not in self._server.inno_tokens:
@@ -736,7 +715,6 @@ class TCPRelayHandler(object):
                     # TODO (fyi): 更新 token 活跃信息
 
                     # 后续
-                    offset = offset + token_len
                     data = data[offset:]
                     if data:
                         self._data_to_write_to_remote.append(data)
@@ -915,7 +893,7 @@ class TCPRelayHandler(object):
         :type data: bytes
         """
         # 第二个字节为命令
-        cmd = data[1] if len(data) > 1 else None
+        cmd = InnoProto.get_command(data)
 
         if cmd == InnoProto.CMD_AUTH:
             self._process_inno_auth(data)
@@ -930,20 +908,19 @@ class TCPRelayHandler(object):
             self.destroy()
 
     def _process_inno_auth(self, data):
-        # 前两字节为 0x80 0x01，第三个字节为鉴权字符串长度，后续为内容
-        if len(data) <= 3 or len(data) < 3 + data[2]:
+        # 获得账号密码
+        passphrase = InnoProto.parse_auth_data(data)
+        if not passphrase:
             self.destroy()
             return
-        # 获得账号密码
-        passphrase = data[3:3 + data[2]]  # type: bytes
 
         # TODO (fyi): 校验认证内容
         auth_ok = passphrase == b'104_A94D_4d3f.8ceb'
 
         # 认证失败，返回错误码
         if not auth_ok:
-            resp = b''.join((b'\x80\x01',
-                             InnoProto.ERRCODE_AUTH_FAIL.to_bytes(1, 'big')))
+            resp = InnoProto.pack_code_result(cmd=InnoProto.CMD_AUTH,
+                                              code=InnoProto.ERRCODE_AUTH_FAIL)
             self._write_to_sock(resp, self._local_sock)
             self.destroy()
             return
@@ -958,10 +935,7 @@ class TCPRelayHandler(object):
         }
 
         # 返回响应内容
-        resp = b''.join((b'\x80\x01',
-                         InnoProto.ERRCODE_OK.to_bytes(1, 'big'),
-                         len(token).to_bytes(1, 'big'),
-                         token))
+        resp = InnoProto.pack_auth_result(token)
         self._write_to_sock(resp, self._local_sock)
         self.destroy()
 

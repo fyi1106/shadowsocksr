@@ -18,6 +18,8 @@
 from __future__ import absolute_import, division, print_function, \
     with_statement
 
+from typing import Tuple
+
 import socket
 import struct
 import logging
@@ -36,6 +38,78 @@ class InnoProto:
     ERRCODE_OK = 0x00
     ERRCODE_TOKEN_ERR = 0x01
     ERRCODE_AUTH_FAIL = 0x02
+
+    @classmethod
+    def is_inno_data(cls, data: bytes) -> bool:
+        return data and (data[0] & InnoProto.MASK != 0)
+
+    @classmethod
+    def is_trans_data(cls, data: bytes) -> bool:
+        return data and data[0] in (0x81, 0x83, 0x84)
+
+    @classmethod
+    def remove_inno_mask(cls, data: bytes) -> bytes:
+        result = b''.join((
+            bytes([data[0] & ~InnoProto.MASK]),
+            data[1:]))
+        return result
+
+    @classmethod
+    def get_command(cls, data: bytes) -> int:
+        # 第二个字节的内容为指令
+        if len(data) < 2 or data[0] != 0x80:
+            return -1
+        return data[1]
+
+    @classmethod
+    def add_token_to_trans(cls, data: bytes, offset: int, token: bytes) -> bytes:
+        new_data = b''.join((
+            # 首字节加标识
+            bytes([data[0] | InnoProto.MASK]),
+            data[1:offset],
+            # token 的长度 + token 内容
+            bytes([len(token)]),
+            token,
+            data[offset:]))
+        return new_data
+
+    @classmethod
+    def get_trans_token(cls, data: bytes, offset: int) -> Tuple[bytes, int]:
+        # 在 header 后跟着 1-byte 的 token 长度，和 token 的内容
+        if len(data) < offset + 1:
+            return b'', -1
+        token_len = data[offset]
+        offset += 1
+        if len(data) < offset + token_len:
+            return b'', -1
+        return data[offset:offset + token_len], offset + token_len
+
+    @classmethod
+    def pack_auth_data(cls, passphrase: bytes) -> bytes:
+        return bytes([0x80, 0x01, len(passphrase)]) + passphrase
+
+    @classmethod
+    def parse_auth_data(cls, data: bytes) -> bytes:
+        # 前两字节为 0x80 0x01，第三个字节为鉴权字符串长度，后续为内容
+        if data[:2] != b'\x80\x01' or len(data) <= 3 or len(data) < 3 + data[2]:
+            return b''
+        # 获得账号密码
+        passphrase = data[3:3 + data[2]]  # type: bytes
+        return passphrase
+
+    @classmethod
+    def pack_auth_result(cls, token: bytes) -> bytes:
+        return bytes([0x80, cls.CMD_AUTH, cls.ERRCODE_OK, len(token)]) + token
+
+    @classmethod
+    def parse_auth_result(cls, data: bytes) -> bytes:
+        if data[:3] != b'\x80\x01\x00' or len(data) <= 4 or len(data) < 4 + data[3]:
+            return b''
+        return data[4:4 + data[3]]
+
+    @classmethod
+    def pack_code_result(cls, cmd: int, code: int) -> bytes:
+        return bytes([0x80, cmd, code])
 
 
 def compat_ord(s):
