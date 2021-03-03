@@ -29,6 +29,7 @@ htmlcov
 
 .DS_Store
 .idea
+*.iml
 
 # Ignore user config
 user-config.json
