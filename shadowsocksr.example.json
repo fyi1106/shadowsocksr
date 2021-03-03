@@ -12,5 +12,6 @@
     "redirect":"",
     "fast_open":false,
     "workers":1,
-    "inno_on": 1
+    "inno_on": 1,
+    "inno_passphrase": "104_A94D_4d3f.8ceb"
 }

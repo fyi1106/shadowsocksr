@@ -638,7 +638,7 @@ class TCPRelayHandler(object):
                             data[1:]))
                     else:
                         # 其它情况，那么这个数据就是其它指令
-                        # handle_inno_command
+                        self._process_inno_command(data)
                         return
 
                 header_result = parse_header(data)
@@ -909,6 +909,67 @@ class TCPRelayHandler(object):
         if buffer_size > frame_size:
             buffer_size = int(buffer_size / frame_size) * frame_size
         return buffer_size
+
+    def _process_inno_command(self, data):
+        """
+        :type data: bytes
+        """
+        # 第二个字节为命令
+        cmd = data[1] if len(data) > 1 else None
+
+        if cmd == InnoProto.CMD_AUTH:
+            self._process_inno_auth(data)
+
+        elif cmd == InnoProto.CMD_HEARTBEAT:
+            self._process_inno_heartbeat(data)
+
+        elif cmd == InnoProto.CMD_DISCONNECT:
+            self._process_inno_disconnect(data)
+
+        else:
+            self.destroy()
+
+    def _process_inno_auth(self, data):
+        # 前两字节为 0x80 0x01，第三个字节为鉴权字符串长度，后续为内容
+        if len(data) <= 3 or len(data) < 3 + data[2]:
+            self.destroy()
+            return
+        # 获得账号密码
+        passphrase = data[3:3 + data[2]]  # type: bytes
+
+        # TODO (fyi): 校验认证内容
+        auth_ok = passphrase == b'104_A94D_4d3f.8ceb'
+
+        # 认证失败，返回错误码
+        if not auth_ok:
+            resp = b''.join((b'\x80\x01',
+                             InnoProto.ERRCODE_AUTH_FAIL.to_bytes(1, 'big')))
+            self._write_to_sock(resp, self._local_sock)
+            self.destroy()
+            return
+
+        # 认证成功，生成 token
+        token = encrypt.random_string(random.randint(8, 16))
+
+        # TODO (fyi): token 信息管理
+        self._server.inno_tokens[token] = {
+            'created_ts': int(time.time()),
+            'passphrase': passphrase,
+        }
+
+        # 返回响应内容
+        resp = b''.join((b'\x80\x01',
+                         InnoProto.ERRCODE_OK.to_bytes(1, 'big'),
+                         len(token).to_bytes(1, 'big'),
+                         token))
+        self._write_to_sock(resp, self._local_sock)
+        self.destroy()
+
+    def _process_inno_heartbeat(self, data):
+        pass
+
+    def _process_inno_disconnect(self, data):
+        pass
 
     def _on_local_read(self):
         # handle all local read events and dispatch them to methods for
@@ -1280,8 +1341,8 @@ class TCPRelay(object):
         self.inno_on = config.get('inno_on', 0)  # for local
         self.inno_passphrase = config.get('inno_passphrase', '')  # for local
         # TODO (fyi): inno token 的获取和管理
-        self.inno_token = b'hello-world'  # for local
-        self.inno_tokens = {b'hello-world': 12345}  # for server
+        self.inno_token = b''  # for local
+        self.inno_tokens = {}  # for server
 
         if config.get('connect_verbose_info', 0) > 0:
             common.connect_log = logging.info

@@ -33,6 +33,10 @@ class InnoProto:
     CMD_HEARTBEAT = 0x02
     CMD_DISCONNECT = 0x03
 
+    ERRCODE_OK = 0x00
+    ERRCODE_TOKEN_ERR = 0x01
+    ERRCODE_AUTH_FAIL = 0x02
+
 
 def compat_ord(s):
     if type(s) == int:

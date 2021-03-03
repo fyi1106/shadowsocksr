@@ -18,6 +18,8 @@
 from __future__ import absolute_import, division, print_function, \
     with_statement
 
+import socket
+
 import sys
 import os
 import logging
@@ -28,7 +30,63 @@ if __name__ == '__main__':
     file_path = os.path.dirname(os.path.realpath(inspect.getfile(inspect.currentframe())))
     sys.path.insert(0, os.path.join(file_path, '../'))
 
-from shadowsocks import shell, daemon, eventloop, tcprelay, udprelay, asyncdns
+from shadowsocks import shell, daemon, eventloop, tcprelay, udprelay, asyncdns, common, encrypt, obfs
+
+
+def inno_auth(config, tcp_server):
+    """
+    :type config: dict
+    :type tcp_server: tcprelay.TCPRelay
+    :rtype: bytes
+    """
+    server_addr = config['server']
+    server_port = config['server_port']
+
+    passphrase = common.to_bytes(config['inno_passphrase'])
+
+    encryptor = encrypt.Encryptor(config['password'], config['method'], None, True)
+    obfuscate = obfs.obfs(config['obfs'])
+
+    server_info = obfs.server_info(tcp_server.obfs_data)
+    server_info.host = config['server']
+    server_info.port = tcp_server._listen_port
+    server_info.protocol_param = ''
+    server_info.obfs_param = config['obfs_param']
+    server_info.iv = encryptor.cipher_iv
+    server_info.recv_iv = b''
+    server_info.key_str = common.to_bytes(config['password'])
+    server_info.key = encryptor.cipher_key
+    server_info.head_len = 30
+    obfuscate.set_server_info(server_info)
+
+    # 组装请求内容
+    request = b''.join((b'\x80\x01',
+                        len(passphrase).to_bytes(1, 'big'),
+                        passphrase))
+    request = encryptor.encrypt(request)
+    request = obfuscate.client_encode(request)
+
+    # 发送请求
+    logging.debug('Inno: send auth request with passphrase %s', common.to_str(passphrase))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((server_addr, server_port))
+    sock.send(request)
+    resp = sock.recv(1024)
+    sock.close()
+    logging.debug('Inno: auth response %s', resp.hex())
+
+    # 如果返回错误
+    if resp[:3] != b'\x80\x01\x00':
+        logging.debug('Inno: auth failed with response %s', resp)
+        raise RuntimeError('auth fail')
+
+    # 如果数据格式错误
+    if len(resp) <= 4 or len(resp) < 4 + resp[3]:
+        raise RuntimeError('invalid auth response %s', resp)
+
+    # 返回 token
+    token = resp[4:4 + resp[3]]
+    return token
 
 
 def main():
@@ -72,6 +130,12 @@ def main():
         signal.signal(signal.SIGINT, int_handler)
 
         daemon.set_user(config.get('user', None))
+
+        # InnoSSR 获取 token
+        token = inno_auth(config, tcp_server)
+        logging.info('Inno: get token %s', token.hex())
+        tcp_server.inno_token = token
+
         loop.run()
     except Exception as e:
         shell.print_exception(e)
