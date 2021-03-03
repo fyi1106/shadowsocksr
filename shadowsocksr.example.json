@@ -11,5 +11,6 @@
     "obfs_param":"",
     "redirect":"",
     "fast_open":false,
-    "workers":1
+    "workers":1,
+    "inno_on": 1
 }

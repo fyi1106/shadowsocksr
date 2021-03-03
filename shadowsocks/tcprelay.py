@@ -30,7 +30,7 @@ import platform
 import threading
 
 from shadowsocks import encrypt, obfs, eventloop, shell, common, lru_cache, version
-from shadowsocks.common import parse_header
+from shadowsocks.common import parse_header, InnoProto
 
 # we clear at most TIMEOUTS_CLEAN_SIZE timeouts each time
 TIMEOUTS_CLEAN_SIZE = 512
@@ -126,6 +126,9 @@ class SpeedTester(object):
 class TCPRelayHandler(object):
     def __init__(self, server, fd_to_handlers, loop, local_sock, config,
                  dns_resolver, is_local):
+        """
+        :type server: TCPRelay
+        """
         self._server = server
         self._fd_to_handlers = fd_to_handlers
         self._loop = loop
@@ -585,6 +588,10 @@ class TCPRelayHandler(object):
         return def_value
 
     def _handle_stage_addr(self, ogn_data, data):
+        """
+        :type ogn_data: bytes
+        :type data: bytes
+        """
         try:
             if self._is_local:
                 cmd = common.ord(data[1])
@@ -614,9 +621,26 @@ class TCPRelayHandler(object):
             before_parse_data = data
             if self._is_local:
                 header_result = parse_header(data)
+                is_inno = self._server.inno_on
             else:
                 if data is None:
                     data = self._handel_protocol_error(self._client_address, ogn_data)
+
+                # InnoSSR 会在第一字节作标记
+                is_inno = data[0] & InnoProto.MASK
+
+                if is_inno:
+                    if data[0] != InnoProto.MASK:
+                        # 如果第一字节除了标记位外还有其它信息，那么就是传输指令
+                        # 去掉标记，后续做普通的处理并验证 token
+                        data = b''.join((
+                            (data[0] & ~InnoProto.MASK).to_bytes(1, 'big'),
+                            data[1:]))
+                    else:
+                        # 其它情况，那么这个数据就是其它指令
+                        # handle_inno_command
+                        return
+
                 header_result = parse_header(data)
                 if header_result is not None:
                     try:
@@ -651,6 +675,26 @@ class TCPRelayHandler(object):
                                      b'\x00\x00\x00\x00\x10\x10'),
                                     self._local_sock)
                 head_len = self._get_head_size(data, 30)
+
+                # 如果是 InnoSSR，将 token 加到 header 与内容之间
+                if is_inno:
+                    token = self._server.inno_token
+                    if not token:
+                        logging.error('Inno: no token for inno')
+                        self.destroy()
+                        return
+
+                    # 将 token 加入到内容里
+                    logging.debug('Inno: use token %s', token.hex())
+                    data = b''.join((
+                        # 首字节加标识
+                        (data[0] | InnoProto.MASK).to_bytes(1, 'big'),
+                        data[1:head_len],
+                        # token 的长度 + token 内容
+                        len(token).to_bytes(1, 'big'),
+                        token,
+                        data[head_len:]))
+
                 self._obfs.obfs.server_info.head_len = head_len
                 self._protocol.obfs.server_info.head_len = head_len
                 if self._encryptor is not None:
@@ -663,6 +707,44 @@ class TCPRelayHandler(object):
                 self._dns_resolver.resolve(self._chosen_server[0],
                                            self._handle_dns_resolved)
             else:
+                # 如果是 InnoSSR 则需要处理 token
+                if is_inno:
+                    # 在 header 后跟着 1-byte 的 token 长度，和 token
+                    # 取 token_len
+                    offset = header_length
+                    if len(data) < offset + 1:
+                        logging.error('Inno: invalid token length in inno transmit data')
+                        self.destroy()
+                        return
+                    token_len = int.from_bytes(data[offset:offset + 1], 'big')
+
+                    # 取 token
+                    offset = offset + 1
+                    if len(data) < offset + token_len:
+                        logging.error('Inno: token length not match in inno transmit data')
+                        self.destroy()
+                        return
+                    token = data[offset:offset + token_len]
+
+                    # 验证 token
+                    if token not in self._server.inno_tokens:
+                        logging.error('Inno: unknown token in inno transmit data')
+                        self.destroy()
+                        return
+
+                    logging.debug('Inno: use token %s', token.hex())
+                    # TODO (fyi): 更新 token 活跃信息
+
+                    # 后续
+                    offset = offset + token_len
+                    data = data[offset:]
+                    if data:
+                        self._data_to_write_to_remote.append(data)
+                    # notice here may go into _handle_dns_resolved directly
+                    self._dns_resolver.resolve(remote_addr,
+                                               self._handle_dns_resolved)
+                    return
+
                 if len(data) > header_length:
                     self._data_to_write_to_remote.append(data[header_length:])
                 # notice here may go into _handle_dns_resolved directly
@@ -1195,6 +1277,11 @@ class TCPRelay(object):
         self.server_connections = 0
         self.protocol_data = obfs.obfs(config['protocol']).init_data()
         self.obfs_data = obfs.obfs(config['obfs']).init_data()
+        self.inno_on = config.get('inno_on', 0)  # for local
+        self.inno_passphrase = config.get('inno_passphrase', '')  # for local
+        # TODO (fyi): inno token 的获取和管理
+        self.inno_token = b'hello-world'  # for local
+        self.inno_tokens = {b'hello-world': 12345}  # for server
 
         if config.get('connect_verbose_info', 0) > 0:
             common.connect_log = logging.info

@@ -25,6 +25,15 @@ import re
 
 from shadowsocks import lru_cache
 
+
+class InnoProto:
+    MASK = 0x80
+
+    CMD_AUTH = 0x01
+    CMD_HEARTBEAT = 0x02
+    CMD_DISCONNECT = 0x03
+
+
 def compat_ord(s):
     if type(s) == int:
         return s
