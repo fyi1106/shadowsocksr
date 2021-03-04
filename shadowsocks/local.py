@@ -25,7 +25,7 @@ import os
 import logging
 import signal
 
-from shadowsocks.common import InnoProto
+from shadowsocks.common import InnoProto, InnoEnv
 
 if __name__ == '__main__':
     import inspect
@@ -44,7 +44,7 @@ def inno_auth(config, tcp_server):
     server_addr = config['server']
     server_port = config['server_port']
 
-    passphrase = common.to_bytes(config['inno_passphrase'])
+    passphrase = InnoEnv.local_passphrase
 
     encryptor = encrypt.Encryptor(config['password'], config['method'], None, True)
     obfuscate = obfs.obfs(config['obfs'])
@@ -105,6 +105,8 @@ def main():
         logging.info("starting local at %s:%d" %
                      (config['local_address'], config['local_port']))
 
+        InnoEnv.init(config)
+
         dns_resolver = asyncdns.DNSResolver()
         tcp_server = tcprelay.TCPRelay(config, dns_resolver, True)
         udp_server = udprelay.UDPRelay(config, dns_resolver, True)
@@ -115,11 +117,16 @@ def main():
 
         def handler(signum, _):
             logging.warn('received SIGQUIT, doing graceful shutting down..')
+
+            udp_server.inno_send_disconnect()
+
             tcp_server.close(next_tick=True)
             udp_server.close(next_tick=True)
         signal.signal(getattr(signal, 'SIGQUIT', signal.SIGTERM), handler)
 
         def int_handler(signum, _):
+            udp_server.inno_send_disconnect()
+
             sys.exit(1)
         signal.signal(signal.SIGINT, int_handler)
 
@@ -128,7 +135,7 @@ def main():
         # InnoSSR 获取 token
         token = inno_auth(config, tcp_server)
         logging.info('Inno: get token %s', token.hex())
-        tcp_server.inno_token = token
+        InnoEnv.local_token = token
 
         loop.run()
     except Exception as e:

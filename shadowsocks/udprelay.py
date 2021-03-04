@@ -73,7 +73,7 @@ import traceback
 import threading
 
 from shadowsocks import encrypt, obfs, eventloop, lru_cache, common, shell
-from shadowsocks.common import parse_header, pack_addr
+from shadowsocks.common import parse_header, pack_addr, InnoProto, InnoEnv
 
 # for each handler, we have 2 stream directions:
 #    upstream:    from client to server direction
@@ -365,6 +365,17 @@ class UDPRelay(object):
         if not data:
             return
 
+        if self._is_local:
+            is_inno = InnoEnv.inno_on
+        else:
+            is_inno = InnoProto.is_inno_data(data)
+            if is_inno:
+                if InnoProto.is_trans_data(data):
+                    data = InnoProto.remove_inno_mask(data)
+                else:
+                    self._inno_process_command(data)
+                    return
+
         try:
             header_result = parse_header(data)
         except:
@@ -379,8 +390,20 @@ class UDPRelay(object):
         if self._is_local:
             addrtype = 3
             server_addr, server_port = self._get_a_server()
+
+            # 对于 InnoSSR，将 token 插入数据
+            if is_inno:
+                data = InnoProto.add_token_to_trans(data, header_length, InnoEnv.local_token)
         else:
             server_addr, server_port = dest_addr, dest_port
+
+            # 对于 InnoSSR，从数据里抽出 token
+            if is_inno:
+                token, offset = InnoProto.get_trans_token(data, header_length)
+                # token 无效就丢包
+                if token not in InnoEnv.server_tokens:
+                    return
+                data = data[:header_length] + data[offset:]
 
         if (addrtype & 7) == 3:
             af = common.is_ip(server_addr)
@@ -643,6 +666,13 @@ class UDPRelay(object):
                 logging.debug('UDP port %5d sockets %d' % (self._listen_port, len(self._sockets)))
             self._sweep_timeout()
 
+            if self._is_local:
+                # 每隔一段时间发送心跳
+                now_ts = int(time.time())
+                if now_ts - InnoEnv.local_heartbeat_ts >= InnoEnv.local_heartbeat_sec:
+                    self.inno_send_heartbeat()
+                    InnoEnv.local_heartbeat_ts = now_ts
+
     def close(self, next_tick=False):
         logging.debug('UDP close')
         self._closed = True
@@ -653,3 +683,64 @@ class UDPRelay(object):
             self._server_socket.close()
             self._cache.clear(0)
             self._cache_dns_client.clear(0)
+
+    def inno_send_heartbeat(self):
+        data = InnoProto.pack_heartbeat_data(InnoEnv.local_token)
+
+        try:
+            self._inno_send_data(data)
+            logging.debug('Inno: send UDP heartbeat, ok')
+        except Exception as e:
+            logging.debug('Inno: send UDP heartbeat, failed with error')
+            shell.print_exception(e)
+
+    def inno_send_disconnect(self):
+        data = InnoProto.pack_disconnect_data(InnoEnv.local_token)
+
+        try:
+            self._inno_send_data(data)
+            logging.debug('Inno: send UDP disconnect, ok')
+        except Exception as e:
+            logging.debug('Inno: send UDP disconnect, failed with error')
+            shell.print_exception(e)
+
+    def _inno_send_data(self, data):
+        ref_iv = [encrypt.encrypt_new_iv(self._method)]
+        self._protocol.obfs.server_info.iv = ref_iv[0]
+        data = self._protocol.client_udp_pre_encrypt(data)
+        data = encrypt.encrypt_all_iv(self._protocol.obfs.server_info.key, self._method, 1, data, ref_iv)
+        if not data:
+            raise RuntimeError('empty data')
+
+        server_addr, server_port = self._get_a_server()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.SOL_UDP)
+        sock.sendto(data, (server_addr, server_port))
+
+    def _inno_process_command(self, data):
+        # 第二个字节为命令
+        cmd = InnoProto.get_command(data)
+
+        if cmd == InnoProto.CMD_HEARTBEAT:
+            self._inno_process_heartbeat(data)
+
+        elif cmd == InnoProto.CMD_DISCONNECT:
+            self._inno_process_disconnect(data)
+
+        else:
+            return
+
+    def _inno_process_heartbeat(self, data):
+        token = InnoProto.parse_heartbeat_data(data)
+        if token not in InnoEnv.server_tokens:
+            logging.debug('Inno: UDP heartbeat invalid token %s', token.hex())
+            return
+        logging.debug('Inno: UDP heartbeat token %s', token.hex())
+        InnoEnv.server_tokens[token]['active_ts'] = int(time.time())
+
+    def _inno_process_disconnect(self, data):
+        token = InnoProto.parse_disconnect_data(data)
+        if token not in InnoEnv.server_tokens:
+            logging.debug('Inno: UDP disconnect invalid token %s', token.hex())
+            return
+        logging.debug('Inno: UDP disconnect token %s', token.hex())
+        del InnoEnv.server_tokens[token]

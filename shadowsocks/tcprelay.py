@@ -30,7 +30,7 @@ import platform
 import threading
 
 from shadowsocks import encrypt, obfs, eventloop, shell, common, lru_cache, version
-from shadowsocks.common import parse_header, InnoProto
+from shadowsocks.common import parse_header, InnoProto, InnoEnv
 
 # we clear at most TIMEOUTS_CLEAN_SIZE timeouts each time
 TIMEOUTS_CLEAN_SIZE = 512
@@ -621,7 +621,7 @@ class TCPRelayHandler(object):
             before_parse_data = data
             if self._is_local:
                 header_result = parse_header(data)
-                is_inno = self._server.inno_on
+                is_inno = InnoEnv.inno_on
             else:
                 if data is None:
                     data = self._handel_protocol_error(self._client_address, ogn_data)
@@ -676,7 +676,7 @@ class TCPRelayHandler(object):
 
                 # 如果是 InnoSSR，将 token 加到 header 与内容之间
                 if is_inno:
-                    token = self._server.inno_token
+                    token = InnoEnv.local_token
                     if not token:
                         logging.error('Inno: no token for inno')
                         self.destroy()
@@ -706,7 +706,7 @@ class TCPRelayHandler(object):
                         logging.error('Inno: failed to get token from transmit data')
 
                     # 验证 token
-                    if token not in self._server.inno_tokens:
+                    if token not in InnoEnv.server_tokens:
                         logging.error('Inno: unknown token in inno transmit data')
                         self.destroy()
                         return
@@ -929,7 +929,7 @@ class TCPRelayHandler(object):
         token = encrypt.random_string(random.randint(8, 16))
 
         # TODO (fyi): token 信息管理
-        self._server.inno_tokens[token] = {
+        InnoEnv.server_tokens[token] = {
             'created_ts': int(time.time()),
             'passphrase': passphrase,
         }
@@ -1312,11 +1312,6 @@ class TCPRelay(object):
         self.server_connections = 0
         self.protocol_data = obfs.obfs(config['protocol']).init_data()
         self.obfs_data = obfs.obfs(config['obfs']).init_data()
-        self.inno_on = config.get('inno_on', 0)  # for local
-        self.inno_passphrase = config.get('inno_passphrase', '')  # for local
-        # TODO (fyi): inno token 的获取和管理
-        self.inno_token = b''  # for local
-        self.inno_tokens = {}  # for server
 
         if config.get('connect_verbose_info', 0) > 0:
             common.connect_log = logging.info

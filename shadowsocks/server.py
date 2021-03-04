@@ -23,6 +23,8 @@ import os
 import logging
 import signal
 
+from shadowsocks.common import InnoEnv
+
 if __name__ == '__main__':
     import inspect
 
@@ -67,6 +69,8 @@ def main():
         logging.info('entering manager mode')
         manager.run(config)
         return
+
+    InnoEnv.init(config)
 
     tcp_servers = []
     udp_servers = []

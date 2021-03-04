@@ -28,6 +28,7 @@ import re
 from shadowsocks import lru_cache
 
 
+# TODO (fyi): 移到单独的模块
 class InnoProto:
     MASK = 0x80
 
@@ -110,6 +111,48 @@ class InnoProto:
     @classmethod
     def pack_code_result(cls, cmd: int, code: int) -> bytes:
         return bytes([0x80, cmd, code])
+
+    @classmethod
+    def pack_heartbeat_data(cls, token: bytes) -> bytes:
+        return bytes([0x80, cls.CMD_HEARTBEAT, len(token)]) + token
+
+    @classmethod
+    def parse_heartbeat_data(cls, data: bytes) -> bytes:
+        if data[:2] != b'\x80\02' or len(data) <= 3 or len(data) < 3 + data[2]:
+            return b''
+        return data[3:3 + data[2]]
+
+    @classmethod
+    def pack_disconnect_data(cls, token: bytes) -> bytes:
+        return bytes([0x80, cls.CMD_DISCONNECT, len(token)]) + token
+
+    @classmethod
+    def parse_disconnect_data(cls, data: bytes) -> bytes:
+        if data[:2] != b'\x80\03' or len(data) <= 3 or len(data) < 3 + data[2]:
+            return b''
+        return data[3:3 + data[2]]
+
+
+# TODO (fyi): 移到单独的模块
+class InnoEnv:
+    LOCAL_DEFAULT_HEARTBEAT_SEC = 60
+
+    # for local
+    inno_on = 0
+    local_passphrase = b''
+    local_heartbeat_ts = 0
+    local_heartbeat_sec = LOCAL_DEFAULT_HEARTBEAT_SEC
+    local_token = b''
+
+    # for server
+    # TODO (fyi): inno token 的获取和管理
+    server_tokens = {}
+
+    @classmethod
+    def init(cls, config: dict):
+        cls.inno_on = config.get('inno_on', 0)
+        cls.local_passphrase = to_bytes(config.get('inno_passphrase', ''))
+        cls.local_heartbeat_sec = config.get('inno_heartbeat_sec', cls.LOCAL_DEFAULT_HEARTBEAT_SEC)
 
 
 def compat_ord(s):
