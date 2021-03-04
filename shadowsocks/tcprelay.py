@@ -915,10 +915,13 @@ class TCPRelayHandler(object):
             return
 
         # TODO (fyi): 校验认证内容
-        auth_ok = passphrase == b'104_A94D_4d3f.8ceb'
+        import re
+        pattern = r'^\d+_[0-9A-F]+_[-0-9a-zA-z]+\.[-0-9a-zA-Z]+$'
+        auth_ok = re.match(pattern, common.to_str(passphrase))
 
         # 认证失败，返回错误码
         if not auth_ok:
+            logging.debug('Inno: auth failed for passphrase %s', common.to_str(passphrase))
             resp = InnoProto.pack_code_result(cmd=InnoProto.CMD_AUTH,
                                               code=InnoProto.ERRCODE_AUTH_FAIL)
             self._write_to_sock(resp, self._local_sock)
@@ -927,6 +930,7 @@ class TCPRelayHandler(object):
 
         # 认证成功，生成 token
         token = encrypt.random_string(random.randint(8, 16))
+        logging.debug('Inno: auth ok for passphrase %s, token %s', common.to_str(passphrase), token.hex())
 
         # TODO (fyi): token 信息管理
         InnoEnv.server_tokens[token] = {
